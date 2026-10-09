@@ -15,23 +15,12 @@ serve(async (req) => {
     const { symptoms, transcript } = await req.json();
     console.log('Processing diagnosis request:', { symptoms, hasTranscript: !!transcript });
 
-    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-    if (!LOVABLE_API_KEY) {
-      throw new Error('LOVABLE_API_KEY is not configured');
+    const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
+    if (!GEMINI_API_KEY) {
+      throw new Error('GEMINI_API_KEY is not configured');
     }
 
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          {
-            role: 'system',
-            content: `You are an AI medical assistant. Analyze patient symptoms and provide:
+    const systemInstruction = `You are an AI medical assistant. Analyze patient symptoms and provide:
 1. Possible diagnoses (ranked by likelihood)
 2. Confidence level (percentage)
 3. Recommended medical tests
@@ -39,66 +28,77 @@ serve(async (req) => {
 
 If important information is missing to narrow the diagnosis (e.g. duration, severity, fever, medications, history), end your answer with a section exactly titled "CLARIFYING QUESTIONS:" followed by up to 3 short, simple questions addressed directly to the patient, each on its own line starting with "- ". Omit that section if no more information is needed. If the transcript is in Urdu, write the questions in Urdu.
 
-IMPORTANT: This is for medical professional assistance only. Always recommend consulting with a healthcare provider.`
-          },
-          {
-            role: 'user',
-            content: `Patient consultation transcript: ${transcript}\n\nSymptoms: ${symptoms.join(', ')}\n\nProvide a structured diagnosis analysis.`
-          }
-        ],
-      }),
-    });
+IMPORTANT: This is for medical professional assistance only. Always recommend consulting with a healthcare provider.`;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemInstruction }] },
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: `Patient consultation transcript: ${transcript}\n\nSymptoms: ${symptoms.join(', ')}\n\nProvide a structured diagnosis analysis.`,
+                },
+              ],
+            },
+          ],
+          generationConfig: { temperature: 0.3 },
+        }),
+      }
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('AI Gateway error:', response.status, errorText);
-      throw new Error(`AI Gateway error: ${response.status}`);
+      console.error('Gemini API error:', response.status, errorText);
+      throw new Error(`Gemini API error: ${response.status}`);
     }
 
     const data = await response.json();
-    const analysis = data.choices[0].message.content;
+    const analysis = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     console.log('Diagnosis generated successfully');
 
-    // Parse the analysis to extract structured data
+    // Extract confidence percentage
     const confidenceMatch = analysis.match(/(\d+)%/);
     const confidence = confidenceMatch ? parseInt(confidenceMatch[1]) : 75;
 
+    // Split off clarifying questions if present
     let diagnosisText = analysis;
     let questions: string[] = [];
     const idx = analysis.search(/\**\s*CLARIFYING QUESTIONS:?\s*\**/i);
     if (idx >= 0) {
       diagnosisText = analysis.slice(0, idx).trim();
-      questions = analysis.slice(idx).split('\n').slice(1)
-        .map((l: string) => l.replace(/^\s*([-*•]|\d+[.)])\s*/, '').replace(/\*\*/g, '').trim())
-        .filter((l: string) => l.length > 3).slice(0, 3);
+      questions = analysis
+        .slice(idx)
+        .split('\n')
+        .slice(1)
+        .map((l: string) =>
+          l.replace(/^\s*([-*•]|\d+[.)])\s*/, '').replace(/\*\*/g, '').trim()
+        )
+        .filter((l: string) => l.length > 3)
+        .slice(0, 3);
     }
 
     return new Response(
       JSON.stringify({
         diagnosis: diagnosisText,
         questions,
-        confidence: confidence,
-        timestamp: new Date().toISOString()
+        confidence,
+        timestamp: new Date().toISOString(),
       }),
-      { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 200
-      }
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
     );
-
   } catch (error) {
     console.error('Error in ai-diagnosis:', error);
     const errorMessage = error instanceof Error ? error.message : 'An error occurred during diagnosis';
     const errorDetails = error instanceof Error ? error.toString() : String(error);
     return new Response(
-      JSON.stringify({ 
-        error: errorMessage,
-        details: errorDetails
-      }),
-      { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 500
-      }
+      JSON.stringify({ error: errorMessage, details: errorDetails }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
     );
   }
 });

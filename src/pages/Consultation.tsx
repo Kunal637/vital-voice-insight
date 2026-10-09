@@ -10,6 +10,19 @@ import { Loader2, FileText, Activity, Edit2, Save, X, HelpCircle, Volume2 } from
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import TestScheduleDialog from '@/components/TestScheduleDialog';
+
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY as string;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent`;
+
+const geminiPost = (body: unknown) =>
+  fetch(GEMINI_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': GEMINI_API_KEY,
+    },
+    body: JSON.stringify(body),
+  });
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 export default function Consultation() {
@@ -118,11 +131,52 @@ export default function Consultation() {
         ? ['headache', 'dizziness', 'light sensitivity'] 
         : ['general discomfort'];
 
-      const { data, error } = await supabase.functions.invoke('ai-diagnosis', {
-        body: { symptoms, transcript }
+      const aiRes = await geminiPost({
+        system_instruction: {
+          parts: [{
+            text: `You are an AI medical assistant. Analyze patient symptoms and provide:
+1. Possible diagnoses (ranked by likelihood)
+2. Confidence level (percentage)
+3. Recommended medical tests
+4. Urgency assessment
+
+If important information is missing, end your answer with a section titled "CLARIFYING QUESTIONS:" followed by up to 3 short questions for the patient, each on its own line starting with "- ". Omit that section if no more info is needed. If the transcript is in Urdu, write the questions in Urdu.
+
+IMPORTANT: This is for medical professional assistance only. Always recommend consulting a healthcare provider.`
+          }]
+        },
+        contents: [{
+          role: 'user',
+          parts: [{ text: `Patient consultation transcript: ${transcript}\n\nSymptoms: ${symptoms.join(', ')}\n\nProvide a structured diagnosis analysis.` }]
+        }],
+        generationConfig: { temperature: 0.3 },
       });
 
-      if (error) throw error;
+      if (!aiRes.ok) {
+        const errText = await aiRes.text();
+        throw new Error(`Gemini API error ${aiRes.status}: ${errText}`);
+      }
+
+      const aiJson = await aiRes.json();
+      const rawText: string = aiJson.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+      // Extract confidence percentage
+      const confidenceMatch = rawText.match(/(\d+)%/);
+      let diagnosisText = rawText;
+      let clarifyingQs: string[] = [];
+      const qIdx = rawText.search(/\**\s*CLARIFYING QUESTIONS:?\s*\**/i);
+      if (qIdx >= 0) {
+        diagnosisText = rawText.slice(0, qIdx).trim();
+        clarifyingQs = rawText.slice(qIdx).split('\n').slice(1)
+          .map((l: string) => l.replace(/^\s*([-*•]|\d+[.)])\s*/, '').replace(/\*\*/g, '').trim())
+          .filter((l: string) => l.length > 3).slice(0, 3);
+      }
+
+      const data = {
+        diagnosis: diagnosisText,
+        questions: clarifyingQs,
+        confidence: confidenceMatch ? parseInt(confidenceMatch[1]) : 75,
+      };
 
       const qs: string[] = data.questions || [];
       setQuestions(qs);

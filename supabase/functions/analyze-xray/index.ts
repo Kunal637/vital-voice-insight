@@ -15,28 +15,36 @@ serve(async (req) => {
     const { imageUrl, imageBase64, testType } = await req.json();
     console.log('Processing X-ray analysis request:', { testType, hasUrl: !!imageUrl, hasBase64: !!imageBase64 });
 
-    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-    if (!LOVABLE_API_KEY) {
-      throw new Error('LOVABLE_API_KEY is not configured');
+    const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
+    if (!GEMINI_API_KEY) {
+      throw new Error('GEMINI_API_KEY is not configured');
     }
 
-    // Prepare the image content for the AI
-    const imageContent = imageUrl 
-      ? { type: "image_url", image_url: { url: imageUrl } }
-      : { type: "image_url", image_url: { url: imageBase64 } };
+    // Resolve image: prefer URL, fall back to base64
+    const imageSource = imageUrl || imageBase64;
+    if (!imageSource) throw new Error('No image provided');
 
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          {
-            role: 'system',
-            content: `You are an AI radiologist assistant. Analyze medical imaging and provide:
+    // Build the inline image part for Gemini
+    // If it's a base64 data URI (data:image/...;base64,...) extract the parts
+    // If it's a plain URL, fetch and convert to base64
+    let inlinePart: { inlineData: { mimeType: string; data: string } } | { fileData: { mimeType: string; fileUri: string } };
+
+    if (imageSource.startsWith('data:')) {
+      // data URI format: data:<mimeType>;base64,<data>
+      const [meta, b64] = imageSource.split(',');
+      const mimeType = meta.replace('data:', '').replace(';base64', '');
+      inlinePart = { inlineData: { mimeType, data: b64 } };
+    } else {
+      // Remote URL — fetch and convert
+      const imgRes = await fetch(imageSource);
+      if (!imgRes.ok) throw new Error(`Failed to fetch image: ${imgRes.status}`);
+      const contentType = imgRes.headers.get('content-type') || 'image/png';
+      const arrayBuffer = await imgRes.arrayBuffer();
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      inlinePart = { inlineData: { mimeType: contentType, data: b64 } };
+    }
+
+    const systemPrompt = `You are an AI radiologist assistant. Analyze medical imaging and provide:
 1. Identification of any abnormalities or areas of concern
 2. Description of findings with approximate locations (percentage from top/left)
 3. Severity assessment
@@ -54,33 +62,40 @@ Format your response as JSON with the following structure:
     }
   ],
   "recommendations": "further steps"
-}`
-          },
-          {
-            role: 'user',
-            content: [
-              {
-                type: "text",
-                text: `Analyze this ${testType || 'X-ray'} image and identify any abnormalities.`
-              },
-              imageContent
-            ]
-          }
-        ],
-      }),
-    });
+}`;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemPrompt }] },
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: `Analyze this ${testType || 'X-ray'} image and identify any abnormalities.` },
+                inlinePart,
+              ],
+            },
+          ],
+          generationConfig: { responseMimeType: 'application/json' },
+        }),
+      }
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('AI Gateway error:', response.status, errorText);
-      throw new Error(`AI Gateway error: ${response.status}`);
+      console.error('Gemini API error:', response.status, errorText);
+      throw new Error(`Gemini API error: ${response.status}`);
     }
 
-    const data = await response.json();
-    let analysis = data.choices[0].message.content;
+    const geminiData = await response.json();
+    let analysis = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
     console.log('X-ray analysis completed successfully');
 
-    // Try to parse as JSON if it's in code blocks
+    // Strip markdown code fences if present
     if (analysis.includes('```json')) {
       analysis = analysis.split('```json')[1].split('```')[0].trim();
     } else if (analysis.includes('```')) {
@@ -90,24 +105,17 @@ Format your response as JSON with the following structure:
     let parsedAnalysis;
     try {
       parsedAnalysis = JSON.parse(analysis);
-    } catch (e) {
-      // If parsing fails, create a structured response
+    } catch {
       parsedAnalysis = {
         findings: analysis,
         anomalies: [],
-        recommendations: "Consult with a radiologist for detailed analysis"
+        recommendations: 'Consult with a radiologist for detailed analysis',
       };
     }
 
     return new Response(
-      JSON.stringify({
-        analysis: parsedAnalysis,
-        timestamp: new Date().toISOString()
-      }),
-      { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 200
-      }
+      JSON.stringify({ analysis: parsedAnalysis, timestamp: new Date().toISOString() }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
     );
 
   } catch (error) {
@@ -115,14 +123,8 @@ Format your response as JSON with the following structure:
     const errorMessage = error instanceof Error ? error.message : 'An error occurred during X-ray analysis';
     const errorDetails = error instanceof Error ? error.toString() : String(error);
     return new Response(
-      JSON.stringify({ 
-        error: errorMessage,
-        details: errorDetails
-      }),
-      { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 500
-      }
+      JSON.stringify({ error: errorMessage, details: errorDetails }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
     );
   }
 });

@@ -4,8 +4,20 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, Upload, Image as ImageIcon, AlertCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { supabase } from '@/integrations/supabase/client';
 import { Input } from '@/components/ui/input';
+
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY as string;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent`;
+
+const geminiPost = (body: unknown) =>
+  fetch(GEMINI_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': GEMINI_API_KEY,
+    },
+    body: JSON.stringify(body),
+  });
 
 export default function XRayAnalysis() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -36,36 +48,72 @@ export default function XRayAnalysis() {
 
     setIsAnalyzing(true);
     try {
-      // Convert image to base64
       const reader = new FileReader();
       reader.onloadend = async () => {
-        const base64Image = reader.result as string;
+        try {
+          const dataUri = reader.result as string;
+          // Extract base64 data and mime type from data URI
+          const [meta, base64Data] = dataUri.split(',');
+          const mimeType = meta.replace('data:', '').replace(';base64', '');
 
-        const { data, error } = await supabase.functions.invoke('analyze-xray', {
-          body: { 
-            imageBase64: base64Image,
-            testType: 'X-ray'
+          const res = await geminiPost({
+              system_instruction: {
+                parts: [{
+                  text: `You are an AI radiologist assistant. Analyze medical imaging and provide findings.
+Format your response as JSON with this exact structure:
+{
+  "findings": "detailed description",
+  "anomalies": [
+    {
+      "description": "what was found",
+      "location": "approximate position",
+      "coordinates": { "x": 0-100, "y": 0-100, "width": 0-100, "height": 0-100 },
+      "severity": "low|medium|high"
+    }
+  ],
+  "recommendations": "further steps"
+}`
+                }]
+              },
+              contents: [{
+                role: 'user',
+                parts: [
+                  { text: 'Analyze this X-ray image and identify any abnormalities. Return only valid JSON.' },
+                  { inlineData: { mimeType, data: base64Data } },
+                ],
+              }],
+              generationConfig: { responseMimeType: 'application/json' },
+            });
+
+          if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`Gemini API error ${res.status}: ${errText}`);
           }
-        });
 
-        if (error) throw error;
+          const geminiData = await res.json();
+          let raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-        setAnalysis(data.analysis);
-        
-        toast({
-          title: "Analysis Complete",
-          description: "X-ray analyzed successfully",
-        });
+          // Strip markdown code fences if present
+          if (raw.includes('```json')) raw = raw.split('```json')[1].split('```')[0].trim();
+          else if (raw.includes('```')) raw = raw.split('```')[1].split('```')[0].trim();
+
+          let parsed;
+          try { parsed = JSON.parse(raw); }
+          catch { parsed = { findings: raw, anomalies: [], recommendations: 'Consult with a radiologist for detailed analysis.' }; }
+
+          setAnalysis(parsed);
+          toast({ title: 'Analysis Complete', description: 'X-ray analyzed successfully' });
+        } catch (err) {
+          console.error('Analysis error:', err);
+          toast({ title: 'Analysis Failed', description: err instanceof Error ? err.message : 'Failed to analyze X-ray', variant: 'destructive' });
+        } finally {
+          setIsAnalyzing(false);
+        }
       };
       reader.readAsDataURL(selectedFile);
     } catch (error) {
       console.error('Analysis error:', error);
-      toast({
-        title: "Analysis Failed",
-        description: error instanceof Error ? error.message : "Failed to analyze X-ray",
-        variant: "destructive",
-      });
-    } finally {
+      toast({ title: 'Analysis Failed', description: error instanceof Error ? error.message : 'Failed to analyze X-ray', variant: 'destructive' });
       setIsAnalyzing(false);
     }
   };
