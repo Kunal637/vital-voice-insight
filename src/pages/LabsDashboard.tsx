@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -9,138 +8,66 @@ import { Activity, LogOut, TestTube, Clock, CheckCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import { Badge } from '@/components/ui/badge';
-
-interface MedicalTest {
-  id: string;
-  test_name: string;
-  test_type: string;
-  status: string;
-  scheduled_date: string;
-  scheduled_time: string;
-  department: string;
-  priority: string;
-  notes: string;
-  completed_at?: string;
-  patients: {
-    full_name: string;
-    email: string;
-  };
-}
+import { useAuth } from '@/integrations/firebase/auth-context';
+import { subscribeAllMedicalTests, updateMedicalTest, createTestResult } from '@/integrations/firebase/firestore';
+import { toDate } from '@/integrations/firebase/firestore';
 
 export default function LabsDashboard() {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const { user, signOut } = useAuth();
   const { toast } = useToast();
-  const [tests, setTests] = useState<MedicalTest[]>([]);
+  const [tests, setTests] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [processingTest, setProcessingTest] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<{ [key: string]: string }>({});
 
+  // Realtime subscription to all tests
   useEffect(() => {
-    checkLabsAndLoadData();
+    const unsub = subscribeAllMedicalTests((allTests) => {
+      setTests(allTests);
+      setLoading(false);
+    });
+    return () => unsub();
   }, []);
 
-  const checkLabsAndLoadData = async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        navigate('/');
-        return;
-      }
-
-      // Check if user is labs
-      const { data: roles } = await supabase
-        .from('user_roles')
-        .select('role')
-        .eq('user_id', user.id)
-        .eq('role', 'labs');
-
-      if (!roles || roles.length === 0) {
-        navigate('/');
-        return;
-      }
-
-      loadTests();
-    } catch (error: any) {
-      console.error('Error loading labs data:', error);
-      toast({
-        title: t('common.error'),
-        description: error.message,
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadTests = async () => {
-    const { data: testsData, error } = await supabase
-      .from('medical_tests')
-      .select('*, consultations(patients(full_name, email))')
-      .order('scheduled_date', { ascending: true, nullsFirst: false });
-
-    if (error) console.error('Error loading tests:', error);
-    if (testsData) {
-      setTests(testsData.map((t: any) => ({ ...t, patients: t.consultations?.patients })) as any);
-    }
-  };
-
-  const handleCompleteTest = async (testId: string, patientUserId: string) => {
+  const handleCompleteTest = async (testId: string, patientId: string) => {
     if (!testResults[testId]) {
-      toast({
-        title: t('common.error'),
-        description: t('labs.enterResults'),
-        variant: 'destructive',
-      });
+      toast({ title: t('common.error'), description: t('labs.enterResults'), variant: 'destructive' });
       return;
     }
 
     setProcessingTest(testId);
-
     try {
-      // Update test status
-      await supabase
-        .from('medical_tests')
-        .update({ 
-          status: 'completed',
-          completed_at: new Date().toISOString()
-        })
-        .eq('id', testId);
-
-      // Create test result
-      await supabase
-        .from('test_results')
-        .insert({
-          test_id: testId,
-          user_id: patientUserId,
-          ai_analysis: testResults[testId],
-        });
-
-      toast({
-        title: t('common.success'),
-        description: t('labs.testCompleted'),
+      await updateMedicalTest(testId, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
       });
 
-      loadTests();
+      await createTestResult({
+        testId,
+        patientId,
+        aiAnalysis: testResults[testId],
+        resultFileUrl: null,
+      });
+
+      toast({ title: t('common.success'), description: t('labs.testCompleted') });
+
       setTestResults((prev) => {
-        const newResults = { ...prev };
-        delete newResults[testId];
-        return newResults;
+        const next = { ...prev };
+        delete next[testId];
+        return next;
       });
     } catch (error: any) {
-      toast({
-        title: t('common.error'),
-        description: error.message,
-        variant: 'destructive',
-      });
+      toast({ title: t('common.error'), description: error.message, variant: 'destructive' });
     } finally {
       setProcessingTest(null);
     }
   };
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    navigate('/');
+    await signOut();
+    navigate('/auth');
   };
 
   if (loading) {
@@ -151,8 +78,8 @@ export default function LabsDashboard() {
     );
   }
 
-  const pendingTests = tests.filter(t => t.status === 'pending');
-  const completedTests = tests.filter(t => t.status === 'completed');
+  const pendingTests = tests.filter((t) => t.status === 'pending');
+  const completedTests = tests.filter((t) => t.status === 'completed');
 
   return (
     <div className="min-h-screen bg-background">
@@ -176,7 +103,7 @@ export default function LabsDashboard() {
 
       <main className="max-w-7xl mx-auto px-6 py-12">
         <div className="space-y-8">
-          {/* Upcoming Scheduled Tests */}
+          {/* Pending Tests */}
           <div>
             <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
               <Clock className="w-6 h-6 text-primary" />
@@ -184,22 +111,16 @@ export default function LabsDashboard() {
             </h2>
             <div className="grid gap-4">
               {pendingTests.length === 0 ? (
-                <Card>
-                  <CardContent className="pt-6">
-                    <p className="text-muted-foreground text-center">
-                      {t('labs.noPendingTests')}
-                    </p>
-                  </CardContent>
-                </Card>
+                <Card><CardContent className="pt-6"><p className="text-muted-foreground text-center">{t('labs.noPendingTests')}</p></CardContent></Card>
               ) : (
                 pendingTests.map((test) => (
                   <Card key={test.id}>
                     <CardHeader>
                       <div className="flex items-start justify-between">
                         <div>
-                          <CardTitle>{test.test_name}</CardTitle>
+                          <CardTitle>{test.testName}</CardTitle>
                           <p className="text-sm text-muted-foreground mt-1">
-                            {test.patients?.full_name} ({test.patients?.email})
+                            {test.patientName} {test.patientEmail ? `(${test.patientEmail})` : ''}
                           </p>
                         </div>
                         <Badge variant={test.priority === 'urgent' ? 'destructive' : 'secondary'}>
@@ -209,30 +130,18 @@ export default function LabsDashboard() {
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <p className="font-semibold">{t('labs.testType')}:</p>
-                          <p className="text-muted-foreground">{test.test_type}</p>
-                        </div>
-                        <div>
-                          <p className="font-semibold">{t('labs.department')}:</p>
-                          <p className="text-muted-foreground">{test.department}</p>
-                        </div>
+                        <div><p className="font-semibold">{t('labs.testType')}:</p><p className="text-muted-foreground">{test.testType}</p></div>
+                        <div><p className="font-semibold">{t('labs.department')}:</p><p className="text-muted-foreground">{test.department}</p></div>
                         <div>
                           <p className="font-semibold">{t('labs.scheduledDate')}:</p>
                           <p className="text-muted-foreground">
-                            {test.scheduled_date ? new Date(test.scheduled_date).toLocaleDateString() : 'N/A'}
+                            {test.scheduledDate ? toDate(test.scheduledDate).toLocaleDateString() : 'N/A'}
                           </p>
                         </div>
-                        <div>
-                          <p className="font-semibold">{t('labs.scheduledTime')}:</p>
-                          <p className="text-muted-foreground">{test.scheduled_time || 'N/A'}</p>
-                        </div>
+                        <div><p className="font-semibold">{t('labs.scheduledTime')}:</p><p className="text-muted-foreground">{test.scheduledTime || 'N/A'}</p></div>
                       </div>
                       {test.notes && (
-                        <div>
-                          <p className="font-semibold text-sm">{t('labs.notes')}:</p>
-                          <p className="text-sm text-muted-foreground">{test.notes}</p>
-                        </div>
+                        <div><p className="font-semibold text-sm">{t('labs.notes')}:</p><p className="text-sm text-muted-foreground">{test.notes}</p></div>
                       )}
                       <div className="space-y-2">
                         <label className="text-sm font-semibold">{t('labs.enterResults')}:</label>
@@ -242,8 +151,8 @@ export default function LabsDashboard() {
                           onChange={(e) => setTestResults({ ...testResults, [test.id]: e.target.value })}
                         />
                       </div>
-                      <Button 
-                        onClick={() => handleCompleteTest(test.id, test.patients?.email)}
+                      <Button
+                        onClick={() => handleCompleteTest(test.id, test.patientId)}
                         disabled={processingTest === test.id}
                         className="w-full"
                       >
@@ -264,25 +173,19 @@ export default function LabsDashboard() {
             </h2>
             <div className="grid gap-4">
               {completedTests.length === 0 ? (
-                <Card>
-                  <CardContent className="pt-6">
-                    <p className="text-muted-foreground text-center">
-                      {t('labs.noCompletedTests')}
-                    </p>
-                  </CardContent>
-                </Card>
+                <Card><CardContent className="pt-6"><p className="text-muted-foreground text-center">{t('labs.noCompletedTests')}</p></CardContent></Card>
               ) : (
                 completedTests.map((test) => (
                   <Card key={test.id}>
                     <CardHeader>
-                      <CardTitle>{test.test_name}</CardTitle>
+                      <CardTitle>{test.testName}</CardTitle>
                       <p className="text-sm text-muted-foreground">
-                        {test.patients?.full_name} ({test.patients?.email})
+                        {test.patientName} {test.patientEmail ? `(${test.patientEmail})` : ''}
                       </p>
                     </CardHeader>
                     <CardContent>
                       <p className="text-sm text-muted-foreground">
-                        {t('labs.completedOn')}: {test.completed_at ? new Date(test.completed_at).toLocaleString() : 'N/A'}
+                        {t('labs.completedOn')}: {test.completedAt ? new Date(test.completedAt).toLocaleString() : 'N/A'}
                       </p>
                     </CardContent>
                   </Card>

@@ -1,0 +1,101 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isRole(role) {
+      return isSignedIn() && userRole() == role;
+    }
+
+    function isDoctor()  { return isRole('doctor'); }
+    function isAdmin()   { return isRole('admin'); }
+    function isLabs()    { return isRole('labs'); }
+    function isPatient() { return isRole('patient'); }
+    function isStaff()   { return isDoctor() || isAdmin() || isLabs(); }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ── Users ─────────────────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read:   if isOwner(uid) || isStaff();
+      allow create: if isOwner(uid) || isAdmin();
+      allow update: if isOwner(uid) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ── Patients ──────────────────────────────────────────────────────────────
+    match /patients/{patientId} {
+      allow read:   if isSignedIn() && (isOwner(patientId) || isStaff());
+      allow create: if isSignedIn() && (isOwner(patientId) || isAdmin());
+      allow update: if isSignedIn() && (isOwner(patientId) || isStaff());
+      allow delete: if isAdmin();
+    }
+
+    // ── Appointments ──────────────────────────────────────────────────────────
+    match /appointments/{id} {
+      allow read:   if isSignedIn() && (
+                      isStaff() ||
+                      resource.data.patientId == request.auth.uid
+                    );
+      allow create: if isSignedIn();
+      allow update: if isStaff() || resource.data.patientId == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    // ── Consultations ─────────────────────────────────────────────────────────
+    match /consultations/{id} {
+      allow read:   if isSignedIn() && (
+                      isStaff() ||
+                      resource.data.patientId == request.auth.uid
+                    );
+      allow create: if isDoctor() || isAdmin();
+      allow update: if isDoctor() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ── Medical Tests ─────────────────────────────────────────────────────────
+    match /medical_tests/{id} {
+      allow read:   if isSignedIn() && (
+                      isStaff() ||
+                      resource.data.patientId == request.auth.uid ||
+                      resource.data.patientEmail == request.auth.token.email
+                    );
+      allow create: if isDoctor() || isAdmin() || isLabs();
+      allow update: if isStaff() || resource.data.patientId == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    // ── Test Results ──────────────────────────────────────────────────────────
+    match /test_results/{id} {
+      allow read:   if isSignedIn() && (
+                      isStaff() ||
+                      resource.data.patientId == request.auth.uid
+                    );
+      allow create: if isSignedIn();   // patient uploads their own result
+      allow update: if isDoctor() || isAdmin() || isLabs();
+      allow delete: if isAdmin();
+    }
+
+    // ── Notifications ─────────────────────────────────────────────────────────
+    match /notifications/{id} {
+      allow read:   if isSignedIn() && (
+                      resource.data.userId == request.auth.uid || isStaff()
+                    );
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (
+                      resource.data.userId == request.auth.uid || isStaff()
+                    );
+      allow delete: if isAdmin() || resource.data.userId == request.auth.uid;
+    }
+  }
+}

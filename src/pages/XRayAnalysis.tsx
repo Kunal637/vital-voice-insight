@@ -1,8 +1,9 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Upload, Image as ImageIcon, AlertCircle } from 'lucide-react';
+import { Loader2, Upload, Image as ImageIcon, AlertCircle, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 
@@ -20,6 +21,7 @@ const geminiPost = (body: unknown) =>
   });
 
 export default function XRayAnalysis() {
+  const navigate = useNavigate();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -119,15 +121,28 @@ Format your response as JSON with this exact structure:
   };
 
   return (
-    <div className="min-h-screen bg-background p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
-        <div className="text-center space-y-2">
-          <h1 className="text-4xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-            X-Ray Analysis
-          </h1>
-          <p className="text-muted-foreground">
-            Upload medical imaging for AI-powered anomaly detection
-          </p>
+    <div className="min-h-screen bg-background">
+      {/* ── Sticky header with breadcrumb ── */}
+      <header className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-border shadow-sm">
+        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
+          <nav className="flex items-center gap-1.5 text-sm min-w-0">
+            <button onClick={() => navigate('/dashboard')} className="text-muted-foreground hover:text-foreground transition-colors shrink-0">Dashboard</button>
+            <span className="text-muted-foreground/40">›</span>
+            <span className="font-semibold text-foreground">X-Ray Analysis</span>
+          </nav>
+          <button
+            onClick={() => navigate(-1)}
+            className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors border border-border rounded-lg px-3 py-1.5 hover:bg-accent shrink-0"
+          >
+            <ArrowLeft className="w-4 h-4" />Back
+          </button>
+        </div>
+      </header>
+
+      <div className="max-w-7xl mx-auto p-6 space-y-6">
+        <div className="text-center space-y-1">
+          <h1 className="text-3xl font-bold bg-gradient-primary bg-clip-text text-transparent">X-Ray Analysis</h1>
+          <p className="text-muted-foreground text-sm">Upload medical imaging for AI-powered anomaly detection</p>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-6">

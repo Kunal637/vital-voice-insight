@@ -4,29 +4,24 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Search, ArrowUpDown } from 'lucide-react';
+import { toDate } from '@/integrations/firebase/firestore';
 
 interface TestResult {
   id: string;
-  created_at: string;
-  medical_tests: {
-    test_name: string;
-    test_type: string;
-    consultations: {
-      patients: {
-        full_name: string;
-        email: string;
-      };
-    };
-  };
+  createdAt: any;
+  testId: string;
+  patientId: string;
+  resultFileUrl?: string;
+  aiAnalysis?: string;
+  // Denormalized fields joined by Dashboard
+  testName?: string;
+  testType?: string;
+  patientName?: string;
+  patientEmail?: string;
 }
 
 interface TestResultsTableProps {
@@ -50,32 +45,18 @@ export default function TestResultsTable({ testResults }: TestResultsTableProps)
 
   const filteredAndSorted = testResults
     .filter((result) => {
-      const searchLower = searchTerm.toLowerCase();
-      const patientName = result.medical_tests?.consultations?.patients?.full_name?.toLowerCase() || '';
-      const testType = result.medical_tests?.test_type?.toLowerCase() || '';
-      const testName = result.medical_tests?.test_name?.toLowerCase() || '';
-      
+      const s = searchTerm.toLowerCase();
       return (
-        patientName.includes(searchLower) ||
-        testType.includes(searchLower) ||
-        testName.includes(searchLower)
+        (result.patientName ?? '').toLowerCase().includes(s) ||
+        (result.testType ?? '').toLowerCase().includes(s) ||
+        (result.testName ?? '').toLowerCase().includes(s)
       );
     })
     .sort((a, b) => {
-      const multiplier = sortDirection === 'asc' ? 1 : -1;
-      
-      if (sortField === 'date') {
-        return multiplier * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-      } else if (sortField === 'patient') {
-        const nameA = a.medical_tests?.consultations?.patients?.full_name || '';
-        const nameB = b.medical_tests?.consultations?.patients?.full_name || '';
-        return multiplier * nameA.localeCompare(nameB);
-      } else if (sortField === 'type') {
-        const typeA = a.medical_tests?.test_type || '';
-        const typeB = b.medical_tests?.test_type || '';
-        return multiplier * typeA.localeCompare(typeB);
-      }
-      
+      const m = sortDirection === 'asc' ? 1 : -1;
+      if (sortField === 'date') return m * (toDate(a.createdAt).getTime() - toDate(b.createdAt).getTime());
+      if (sortField === 'patient') return m * (a.patientName ?? '').localeCompare(b.patientName ?? '');
+      if (sortField === 'type') return m * (a.testType ?? '').localeCompare(b.testType ?? '');
       return 0;
     });
 
@@ -105,33 +86,18 @@ export default function TestResultsTable({ testResults }: TestResultsTableProps)
             <TableHeader>
               <TableRow>
                 <TableHead>
-                  <Button
-                    variant="ghost"
-                    onClick={() => handleSort('patient')}
-                    className="flex items-center gap-1 p-0 h-auto font-semibold hover:bg-transparent"
-                  >
-                    Patient Name
-                    <ArrowUpDown className="h-4 w-4" />
+                  <Button variant="ghost" onClick={() => handleSort('patient')} className="flex items-center gap-1 p-0 h-auto font-semibold hover:bg-transparent">
+                    Patient Name <ArrowUpDown className="h-4 w-4" />
                   </Button>
                 </TableHead>
                 <TableHead>
-                  <Button
-                    variant="ghost"
-                    onClick={() => handleSort('type')}
-                    className="flex items-center gap-1 p-0 h-auto font-semibold hover:bg-transparent"
-                  >
-                    Type of Test
-                    <ArrowUpDown className="h-4 w-4" />
+                  <Button variant="ghost" onClick={() => handleSort('type')} className="flex items-center gap-1 p-0 h-auto font-semibold hover:bg-transparent">
+                    Type of Test <ArrowUpDown className="h-4 w-4" />
                   </Button>
                 </TableHead>
                 <TableHead>
-                  <Button
-                    variant="ghost"
-                    onClick={() => handleSort('date')}
-                    className="flex items-center gap-1 p-0 h-auto font-semibold hover:bg-transparent"
-                  >
-                    Date Conducted
-                    <ArrowUpDown className="h-4 w-4" />
+                  <Button variant="ghost" onClick={() => handleSort('date')} className="flex items-center gap-1 p-0 h-auto font-semibold hover:bg-transparent">
+                    Date Conducted <ArrowUpDown className="h-4 w-4" />
                   </Button>
                 </TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -140,29 +106,17 @@ export default function TestResultsTable({ testResults }: TestResultsTableProps)
             <TableBody>
               {filteredAndSorted.map((result) => (
                 <TableRow key={result.id} className="cursor-pointer hover:bg-accent/50">
-                  <TableCell
-                    onClick={() => navigate(`/test-result/${result.id}`)}
-                    className="font-medium text-primary hover:underline"
-                  >
-                    {result.medical_tests?.consultations?.patients?.full_name || 'Unknown Patient'}
+                  <TableCell className="font-medium text-primary hover:underline" onClick={() => navigate(`/test-result/${result.id}`)}>
+                    {result.patientName || 'Unknown Patient'}
                   </TableCell>
                   <TableCell>
-                    <Badge variant="secondary">
-                      {result.medical_tests?.test_type || 'N/A'}
-                    </Badge>
+                    <Badge variant="secondary">{result.testType || 'N/A'}</Badge>
                   </TableCell>
                   <TableCell>
-                    {new Date(result.created_at).toLocaleDateString()}
+                    {toDate(result.createdAt).toLocaleDateString()}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigate(`/test-result/${result.id}`);
-                      }}
-                    >
+                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/test-result/${result.id}`); }}>
                       View Details
                     </Button>
                   </TableCell>

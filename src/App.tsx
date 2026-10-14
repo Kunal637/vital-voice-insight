@@ -3,8 +3,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { AuthProvider, useAuth } from "@/integrations/firebase/auth-context";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
@@ -19,27 +18,79 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
-const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+// ── Protected Route ────────────────────────────────────────────────────────────
+const ProtectedRoute = ({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) => {
+  const { user, loading } = useAuth();
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setIsAuthenticated(!!session);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setIsAuthenticated(!!session);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  if (isAuthenticated === null) {
+  if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
 
-  return isAuthenticated ? <>{children}</> : <Navigate to="/auth" />;
+  if (!user) {
+    return <Navigate to="/auth" replace />;
+  }
+
+  if (allowedRoles && !allowedRoles.includes(user.role)) {
+    // Redirect to their correct portal instead of showing a 403
+    return <Navigate to="/auth" replace />;
+  }
+
+  return <>{children}</>;
 };
+
+// ── Routes ─────────────────────────────────────────────────────────────────────
+const AppRoutes = () => (
+  <Routes>
+    <Route path="/" element={<Index />} />
+    <Route path="/auth" element={<Auth />} />
+
+    {/* Doctor / Admin routes */}
+    <Route path="/dashboard" element={
+      <ProtectedRoute allowedRoles={['doctor', 'admin']}>
+        <Dashboard />
+      </ProtectedRoute>
+    } />
+    <Route path="/dashboard/consultation" element={
+      <ProtectedRoute allowedRoles={['doctor', 'admin']}>
+        <Consultation />
+      </ProtectedRoute>
+    } />
+    {/* Legacy redirect — old /consultation links still work */}
+    <Route path="/consultation" element={<Navigate to="/dashboard/consultation" replace />} />
+    <Route path="/xray-analysis" element={
+      <ProtectedRoute allowedRoles={['doctor', 'admin']}>
+        <XRayAnalysis />
+      </ProtectedRoute>
+    } />
+    <Route path="/test-result/:id" element={
+      <ProtectedRoute allowedRoles={['doctor', 'admin']}>
+        <TestResultDetail />
+      </ProtectedRoute>
+    } />
+    <Route path="/admin" element={
+      <ProtectedRoute allowedRoles={['admin']}>
+        <Admin />
+      </ProtectedRoute>
+    } />
+
+    {/* Patient route */}
+    <Route path="/patient-dashboard" element={
+      <ProtectedRoute allowedRoles={['patient']}>
+        <PatientDashboard />
+      </ProtectedRoute>
+    } />
+
+    {/* Labs route */}
+    <Route path="/labs-dashboard" element={
+      <ProtectedRoute allowedRoles={['labs']}>
+        <LabsDashboard />
+      </ProtectedRoute>
+    } />
+
+    <Route path="/leaflet" element={<Leaflet />} />
+    <Route path="*" element={<NotFound />} />
+  </Routes>
+);
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -47,68 +98,9 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Index />} />
-          <Route path="/auth" element={<Auth />} />
-          <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/consultation"
-            element={
-              <ProtectedRoute>
-                <Consultation />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/xray-analysis"
-            element={
-              <ProtectedRoute>
-                <XRayAnalysis />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/test-result/:id"
-            element={
-              <ProtectedRoute>
-                <TestResultDetail />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin"
-            element={
-              <ProtectedRoute>
-                <Admin />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/patient-dashboard"
-            element={
-              <ProtectedRoute>
-                <PatientDashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/labs-dashboard"
-            element={
-              <ProtectedRoute>
-                <LabsDashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route path="/leaflet" element={<Leaflet />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>

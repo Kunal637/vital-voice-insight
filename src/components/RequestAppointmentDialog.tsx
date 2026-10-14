@@ -6,38 +6,43 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { CalendarPlus } from 'lucide-react';
-import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/integrations/firebase/auth-context';
+import { createAppointment } from '@/integrations/firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 
 const departments = ['General Medicine', 'Cardiology', 'Orthopaedics', 'Pulmonology', 'Endocrinology', 'Pediatrics'];
 
 export default function RequestAppointmentDialog({ patientName, onCreated }: { patientName: string; onCreated: () => void }) {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ department: 'General Medicine', date: '', time: '', reason: '' });
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) return;
     setSaving(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    const { error } = await supabase.from('appointments').insert({
-      user_id: user!.id,
-      patient_name: patientName,
-      department: form.department,
-      preferred_date: form.date,
-      preferred_time: form.time,
-      reason: form.reason.trim(),
-    });
-    setSaving(false);
-    if (error) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
-      return;
+    try {
+      await createAppointment({
+        patientId: user.patientId ?? user.uid,
+        patientName,
+        patientEmail: user.email ?? '',
+        department: form.department,
+        preferredDate: form.date,
+        preferredTime: form.time,
+        reason: form.reason.trim(),
+        status: 'requested',
+      });
+      toast({ title: 'Request sent', description: 'The doctor will confirm your appointment.' });
+      setForm({ department: 'General Medicine', date: '', time: '', reason: '' });
+      setOpen(false);
+      onCreated();
+    } catch (err: any) {
+      toast({ title: 'Error', description: err?.message ?? 'Failed to send request.', variant: 'destructive' });
+    } finally {
+      setSaving(false);
     }
-    toast({ title: 'Request sent', description: 'The doctor will confirm your appointment.' });
-    setForm({ department: 'General Medicine', date: '', time: '', reason: '' });
-    setOpen(false);
-    onCreated();
   };
 
   return (
